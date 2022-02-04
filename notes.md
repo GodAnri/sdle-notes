@@ -104,23 +104,77 @@ All replicas execute updates in the same order - same initial state leads to sam
 + **Complete graph:** each pair of vertices has an edge connecting them;
 + **Clique:** complete sub-graph;
 + **Connected graph:** there is a path between any two nodes;
++ **Connected component:** maximal connected subgraph;
++ **Strongly connected graph:** a directed graph that, for each pair of nodes `(u,v)`, has a path from `u` to `v` and a path from `v` to `u`;
 - **Tree:** connected graph with no cycles;
 - **Star:** central vertice and many leaf nodes connected to it (includes trees);
 - **Planar graph:** vertices and edges can be drawn in a plane and no two edges intersect (includes stars and trees);
-+ **Connected component:** maximal connected subgraph;
 + **Degree of a node:** number of adjacent vertices; in directed graphs, there's in-degree and out-degree;
 + **Distance between nodes:** length of the shortest path connecting those nodes;
 + **Eccentricity of a node:** maximum distance from a node to all nodes in the network;
 + **Diameter of a graph:** maximum eccentricity of all nodes in a graph (maximum distance between any two nodes);
 + **Radius of a graph:** minimum eccentricity of all nodes in a graph;
 + **Center:** vertex/vertices with eccentricity equal to the radius;
-+ **Periphery:** vertex/vertices with eccentricity equal to the diameter.
-
-Examples
-- Center of a tree: 1 or 2.
-- Center of a path: 1 or 2.
-- Center of a ring: number of nodes in the ring.
-- Periphery of a ring: number of nodes in the ring.
+    + Center of a tree: 1 or 2;
+    + Center of a path: 1 or 2;
+    + Center of a ring: number of nodes in the ring;
++ **Periphery:** vertex/vertices with eccentricity equal to the diameter;
+    + Periphery of a ring: number of nodes in the ring.
 
 ### Network
 In a network context, cyclic graphs allow multi-path routing, which can be more robust but data handling can become more complex. Thus, distributed algorithms often construct trees to avoid cycles, while others try to work under multi-path.
+
+### Complex topologies
+- **Random geometric:** vertices are dropped randomly uniformly into a unit square and edges are added to connect any two points within a given euclidean distance;
+- **Random Erdos-Renyi `G(n,p)`:** `n` nodes are connected randomly; each edge is included with independent probability `p`;
+- **Watts-Strogatz:** Manhattan grid + Erdos-Renyi;
+- **Barabasi-Albert:** based on preferential attachment - the more connected a node is, the more likely it is to receive new links; degree distribution follows a power law - few nodes with high degree, many nodes with low degree;
+
+### Spanning trees
+- **Directed spanning tree:** a directed spanning tree with root node `i` is breadth-first if each node at distance `d` from `i` appears at depth `d` in the tree; every strongly connected graph has a breadth-first directed spanning tree;
+- **SyncBFS algorithm:** initial state - `parent: nil, marked: False` (except for root, where `marked: True`); unmarked processes receiving a `search` message from `x` do `parent = x, marked = True` and, in the next round, `search` messages are sent from these;
+    - **Complexity:**
+        - **Time:** at most `diam` rounds (depends on `i` eccentricity);
+        - **Message:** at most `|E|` messages are sent (across all edges);
+    - **Child pointers:** if parents need to know their offspring, processes must reply with either `parent` or `nonparent`; this is only easy when the graph is undirected, but is achievable in general strongly connected graphs;
+    - **Termination:** all processes respond with `parent` or `nonparent`; parent terminates when all children terminate; responses are collected from leaves to root;
+    - **Applications:**
+        - **Aggregation:** input values in each process can be aggregated towards a sync node; each value only contributes once; many functions can be used (sum, max, avg, voting, ...);
+        - **Leader election:** largest `UID` wins; all processes become the root of their own tree and aggregate a `Max(UID)`; each decides by comparing its own `UID` with `Max(UID)`;
+        - **Broadcast:** message payload can be attached to SyncBFS construction (`m|E|` message load) or broadcasted once tree is formed (`m|V|` message load);
+        - **Computing diameter:** each process constructs a SyncBFS and determines `maxdist` (longest tree path); afterwards all processes use their trees to aggregate `max(maxdist)` from all roots/nodes; time: `O(diam)`; messages: `O(diam*|E|)`.
+- **AsynchSpanningTree algorithm:** reliable FIFO with send/receive with cause() function linking a send to a receive; upon receiving a message, the node sets its `parent` and, instead of sending the message to every other neighbour apart from its parent, a `sendto` condition is set to `True` for each of them, making it *possible* to send the message; AsynchSpanningTree is not a direct asynchronous translation of SyncBFS, because it does not necessarily produce a breadth-first spanning tree (faster long paths will win over slower direct paths);
+    - **Invariants:**
+        - In any reachable state, the edges defined by all `parent` variables form a spanning tree of a subgraph of G, containing the root `i0`; moreover, if there is any message in any channel `C`<sub>`i,j`</sub>, then `i` is in this spanning tree;
+        - In any reachable state, if `i` is a part of the tree (is root or has parent), and if `j` is a neighbour of `i` except the root, then either `j` is a part of the tree or `C`<sub>`i,j`</sub> contains a `search` message or `sendto(j) = true`;
+    - **Theorem:** the AsynchSpanningTree algorithm constructs a spanning tree in an undirected graph;
+    - **Complexity:** although time is unbounded, it is practical to assume an upper bound on time to execute an effect (`l`) and to deliver a message in a channel (`d`)
+        - **Time:** `O(diam*(l+d))`;
+        - **Messages:** `O(|E|)`;
+        - Although a tree with height `h > diam` can occur, it only happens if it doesn't take more time than a tree with `h = diam`.
+    - **Child pointers:** same as SyncBFS, even though the time complexity of the tree built from the `parent` variables can be at most `O(n(l+d))`, because a fast path is not always fast, it can be faster when calculating but slower afterwards;
+    - **Applications:**
+        - **Broadcast with Acks:** it is possible to build an AsynchBcastAck algorithm that collects Acks as the tree is constructed; upon incoming broadcast message, each node Acks if it already knows the broadcast, and Acks to parent once all neighbours Ack to it;
+        - **Leader election with AsynchBcastAck:** AsynchBcastAck includes termination and if all nodes initiate it and report their UIDs, it can be used for leader election with unknown diameter and number of nodes.
+
+### Epidemic Broadcast Trees
+- Gossip Broadcast: highly scalable and resilient, but excessive message overhead.
+- Tree-Based Broadcast: small message complexity, but fragile in presence of failures.
+
++ Eager push: nodes immediately forward new messages;
++ Pull: nodes periodically query for new messages;
++ Lazy push: nodes push new message ids and accept pulls (there is a separation among payload and metadata);
+
+Epidemic broadcast tries to combine the best of both broadcast models:
+- Nodes sample a few random peers into an `eagerPush` set (neighbours);
+- Connections should be stable, can use TCP and links are reciprocal (bidirectional);
+- First message reception puts origin in `eagerPush`, while further duplicate receptions move source to `lazyPush`;
+- Eager push of payload, lazy push of metadata;
+- If the tree breaks and graph stays connected, nodes get metadata but not payloads; this is detected by timer expiration and the metadata source is moved from `lazyPush` to `eagerPush`;
+- Potential redundancy (due to cycles) is cleared later by the standard algorithm.
+
+### Watts and Strogatz
+- "Six degrees of separation" - every two people need an average of 6 known people hops to be related;
+- Random graphs are not a good model for people acquaintances, since people graphs have more clustering;
+- Watts and Strogatz proposed a model that mixes short-range and long-range contacts;
+- Nodes establish `k` local contacts using some distance metric among vertices (e.g. in a ring) and a few long-range contacts uniformly at random, resulting in low diameter and high clustering.
