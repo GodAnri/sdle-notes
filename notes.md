@@ -177,4 +177,299 @@ Epidemic broadcast tries to combine the best of both broadcast models:
 - "Six degrees of separation" - every two people need an average of 6 known people hops to be related;
 - Random graphs are not a good model for people acquaintances, since people graphs have more clustering;
 - Watts and Strogatz proposed a model that mixes short-range and long-range contacts;
-- Nodes establish `k` local contacts using some distance metric among vertices (e.g. in a ring) and a few long-range contacts uniformly at random, resulting in low diameter and high clustering.
+- Nodes establish `k` local contacts using some distance metric among vertices (e.g. in a ring) and a few long-range contacts uniformly at random, resulting in low diameter and high clustering;
+- Flooding in Watts and Strogatz graph, we can achieve a `O(log N)` path; nevertheless, going to the next nearest point to our target can make us keep jumping and only achieve `O(sqrt(N))` paths, because these paths lack locality;
+- Kleinberg solved this issue by choosing a probability function that made it more likely for links to be local;
+- Long range contacts can be tuned to become more clustered in the vicinity;
+- The goal is to have uniformity across all distance scales, a property found in DHT designs like Chord, and locally find `O(log`<sup>`2`</sup>`N)` routes;
+
+-------------------
+
+## System Design for Large Scale
+### Motivation
+- Fast adoption of a new service may kill it;
+- Since many users have always-on broadband connections, it is tempting to use resources latent at the network edge (P2P);
+- The more users that adopt a new service, the more power there is to run it (at least in theory - law of diminishing returns: in a production system with fixed and variable inputs, beyond some point, each additional unit of variable input yields less and less aditional output);
+
+### Gnutella
+**Early design:**
+- Fully distributed solution to P2P file sharing;
+- Partially randomised overlay network, each node connects to a number of nodes that varies across nodes and allocated bandwidths;
+- Bootstrapping is done by HTTP hosted host caches (the system came with some known HTTP addresses pointing to servers with a list of IP and ports to machines working on the Gnutella network);
+- Due to high churn, local host caches can quickly become outdated (these addresses either had to be sent with the source code or an website where users can update their list had to exist);
+- Routing based on flooding (`PING`) and reverse path routing (`PONG`);
+- Querying based on flooding (`QUERY`) and reverse path routing (`QUERY RESPONSE`) as well, the answer set grows with time until the diameter/maximum hop is reached;
+- `GET` and `PUSH` requests are used to initiate file transfer directly between peers (`PUSH` is used to circumvent single firewalls that would block a `GET` in a given direction);
+- This early design was not scalable (`PING`/`PONG` traffic was dominant).
+
+**Improved:**
+- Some nodes had higher maximum connectivity and bandwidth, most were always-on servers;
+- Nodes preferred connection to these "super peers" with more uptime;
+- Super peers work as in the early Gnutella, while shielding traffic;
+- A digest (bloom filter) is sent from peers to super peers, which only contact target peers with a high likelihood of having the queried content;
+
+**Bloom filter:**
+- 256 bit code containing information about the presence of some word(s) in a text;
+- Using a hash function multiple times with a different addition to the initial string (for example, SHA1(s + "0"), SHA1(s + "1"), etc.), the word(s) is(are) hashed and, for each of the variants, the bit corresponding to the 8-bit result is set to 1.
+- A part of the query can be hashed and, if all bits corresponding to the hashes of that word are set to 1, the content is probably in the node;
+- Longer queries lead to a higher likelihood of false positive.
+
+### Distributed Hash Tables
+Even in a super peer architecture, search in Gnutella is essentially flooding. DHTs are able to bound the number of hops traversed to lookup a given target, by providing a way of mapping keys to network nodes. In order to preserve some structure in the routing supporting the DHT, joins and leaves should be accounted for, so these protocols can require more maintenance than unstructured approaches.
+
+**Chord:**
+- Nodes and keys are assigned probabilistic unique ids from `0` to `2`<sup>`m`</sup>`-1`;
+- Both node ids (e.g. IPs or e-mail addresses) and keys are hashed by SHA1 and `m` bits are taken, being assigned a `mod 2`<sup>`m`</sup>;
+- The node whose ID is closest after a keyID will store that key;
+- Each node keeps the address and id of clockwise `m` other nodes, and `r` vicinity nodes in both directions;
+- The `i`<sup>`th`</sup> entry in node `n` indicates the first node that succeeds `n` by at least `2`<sup>`i-1`</sup>;
+- Routing takes `O(log n)` steps, nodes keep `O(log n)` knowledge on other nodes.
+
+**Kademlia:**
+- Nodes and keys share a 160 bits id space, and keys are stored in "close by" nodes.
+- Distance is measured with the XOR metric, which respects the triangle property (length of sides);
+- Unlike Chord, routing is symmetric and alternative next hops can be taken for low latency or parallel routing;
+- Routing tables consist of a list for each bit of the node ID, and a node in position `i` must have bits `0` to `i-1` identical to the owner and a different `i`<sup>`th`</sup> bit (so it is easy to find nodes for the first positions, but hard to find nodes for the last ones);
+- To account for failing nodes and alternative paths, in each position up to `k` (about 20) nodes are stored;
+- Candidate node uptimes are considered when competing for `k` limited positions.
+
+-------------------
+
+## Physical and Logical Time
+### Time properties
+- Time needs memory (since it is countable change);
+- Time is local (rate of change slows with acceleration);
+- Time synchronisation is harder at distance;
+- Time is a bad proxy for causality.
+
+### Clock drift
+- Clock drift is the drift between measured time and a reference time;
+- A second is defined in terms of transitions of Cesium-133;
+- UTC (Coordinated Universal Time) inserts/removes seconds to sync with orbital time.
+
+### Synchronisation
+- **External synchronisation:** precision with respect to an external authoritative reference - guarantee that `|S(t) - C`<sub>`i`</sub>`(t)| < D`, for a band `D > 0` and a UTC source `S`;
+- **Internal synchronisation:** precision among two nodes - guarantee that `|C`<sub>`j`</sub>`(t) - C`<sub>`i`</sub>`(t)| < D`, for a band `D > 0`;
+- An externally synchronised system at band `D` is necessarily also at `2D` internal synchronisation;
+- Some uses (e.g. `make`) require monotonicity (`t' > t`$\implies$`C(t') > C(t)`);
+- Advanced clocks can be corrected by reducing the time rate until aimed synchrony is reached;
+
+### Synchronisation in synchronous systems
+- Knowing the transit time `trans` and receiving origin time `t`, one could set to `t + trans`;
+- However, `trans` can vary between `tmin` and `tmax`.
+- Using `t + tmin` or `t + tmax`, the uncertainty is `u = tmax - tmin`.
+- Using `t + (tmin + tmax)/2`, the uncertainty becomes `u/2`.
+
+### Synchronisation in asynchronous systems
+- Transit time varies between `tmin` and +$\infty$, so there is no midpoint;
+- **Cristian's Algorithm:**
+    - Send a request `m`<sub>`r`</sub> that triggers response `m`<sub>`t`</sub> carrying time `t`;
+    - Measure the RTT of request and reply as `t`<sub>`r`</sub>;
+    - Set clock to `t + t`<sub>`r`</sub>`/2` assuming a balanced RTT;
+    - Precision can be increased by repeating the protocol until a low `t`<sub>`r`</sub> occurs.
+- **Berkeley Algorithm:**
+    - A coordinator measures RTT to the other nodes and sets target time to the average of times;
+    - New times for nodes to set are propagated as deltas relative to their local times, in order to be resilient to propagation delays.
+
+### Causality: Happens-before
+Causality is a partial order relation, and is only potential influence.
+- Collect memories as sets of unique events;
+- Set inclusion explains causality (`{a`<sub>`1`</sub>`,b`<sub>`1`</sub>`} `$\subset$` {a`<sub>`1`</sub>`,a`<sub>`2`</sub>`,b`<sub>`1`</sub>`}`);
+- A simpler way of checking causality is checking the latest event (`e`<sub>`n `</sub>$\in$` C`<sub>`x`</sub>$\implies$`{e`<sub>`1`</sub>`,e`<sub>`2`</sub>`,...,e`<sub>`n`</sub>`} `$\subset$` C`<sub>`x`</sub>);
+
+### Vector clocks
+- `{a`<sub>`1`</sub>`,a`<sub>`2`</sub>`,b`<sub>`1`</sub>`,b`<sub>`2`</sub>`,b`<sub>`3`</sub>`,c`<sub>`2`</sub>`,c`<sub>`2`</sub>`,c`<sub>`3`</sub>`}` $\Leftrightarrow$ `{a` $\to$ `2, b` $\to$ `3, c` $\to$ `3}` $\Leftrightarrow$ `[2,3,3]`;
+- Check of causality: `[a, b, c]` $\to$ `[a', b', c']` if `a` $\le$ `a'` and `b` $\le$ `b'` and `c` $\le$ `c'`;
+- Concurrency, order and difference can be represented graphically;
+- Message reception retrieves point-wise maximum and registers one new event on the result;
+- Comparing vectors is linear on vector size, but can be improved by tracking the last event.
+
+### Version vectors
+- Not all events are registered, only the important ones, that cause versioning;
+- Message reception does not register a new event;
+
+### Scaling causality
+- Data Center has `get/put` interface;
+- Two proxies receive the same `get` and send a different `put` to the server;
+- Three options:
+    - Conditional writes: only the first `put` is accepted;
+    - Overwrite first value: use clock (assuming synchronisation) to determine the last writer (Last-Writer-Wins, e.g. Cassandra);
+    - Multi-Value: `[1,0]` $\parallel$ `[0,1]`, one entry per client (linear-size version client).
+- **Scaling at the edge (Dotted Version Vectors):**
+    - `get`s get all values, with compact causal context (`[0,0]s`<sub>`1`</sub> `U` `[0,0]s`<sub>`2`</sub> `= [2,0]`);
+    - `put`s can go to alternative servers (server T can get a `put` with context `[2,0]`);
+    - Allows to deal with clusters of servers (each with an entry on the version vector), and interactions through proxies without conditional writes or LWW;
+- **Dynamic causality (Interval Tree Clocks)**
+    - Tracking causality requires exclusive access to identities, and to avoid preconfiguring them, id space can be split and joined;
+    - A seed node controls the initial id space;
+    - Registering events can use any portion above the controlled id;
+    - Ids can be split from any available entity, and these resulting entities can register new events and become concurrent;
+    - Any two entities can merge together, and eventually all entities can collect the whole id space and simplify the encoding of events;
+
+-------------------
+
+## High Availability under Eventual Consistency
+In geo-replication, latencies vary widely ($\lambda$` < 50ms` - local region DC; `100ms < `$\Lambda$` < 300ms` - intercontinental):
+- Consensus/Paxos: [$\Lambda$,$2\Lambda$] (no divergence);
+- Primary-Backup: [$\lambda$,$\Lambda$] (asynchronous/lazy);
+- Multi-Master: $\lambda$ (divergence).
+
+### EC and CAP
+- **Eventually consistent:** ideally, when an update is made, all observers should see that update; building reliable distributed systems demands trade-offs between consistency and availability;
+- **CAP theorem:** of three properties - data **c**onsistency, system **a**vailability and tolerance to network **p**artition - only two can be achieved at any given time; focus on **AP** (availability + partition tolerance);
+- **Eventual consistency:** after an update, if no new updates are made to the object, eventually all reads will return the same value (e.g. DNS); this can be reformulated to avoid quiescence (for convergent, permanently changing systems) by adapting a session guarantee.
+- **Session guarantees:**
+    - Read your writes - read operations reflect previous writes;
+    - Monotonic reads - successive reads reflect a non-decreasing set of writes;
+    - Writes follow reads - writes are propagated after reads on which they depend (writes made during the session are ordered after any writes whose effects were seen by previous reads in the session);
+    - Monotonic writes - writes are propagated after writes that logically precede them (writes are only incorporated into a server's database copy after all previous session writes).
+
+### Sequential to concurrent execution
+- Consensus and linearisability provides illusion of a single replica, which preserves (slow) sequential behaviour ($\lt$); 
+- EC Multi-Master (or active-active) can expose concurrency ($\prec$);
+
+### Conflict-Free Replicated Data Types (CRDTs)
+- **Road to accomodate transition from sequential to concurrent:**
+    - Permutation equivalence: if operations can commute sequentially, then they should preserve the same result under concurrency;
+    - Preserving sequential semantics;
+    - Concurrent executions can have richer outcomes;
+- Convergence after concurrent updates; favor AP under CAP;
+- Examples: counters, sets, mv-registers, maps, graphs;
+- Operation-based CRDTs (operation effects must commute):
+    - Example: PNCounter (`inc(dec(c)) = dec(inc(c))`); G-Set (`add`<sub>`a`</sub>`(add`<sub>`b`</sub>`(s)) = add`<sub>`b`</sub>`(add`<sub>`a`</sub>`(s))`).
+- State-based CRDTs (rooted on join semi-lattices);
+    - $\le$ reflects monotonic state evolution (increase of information).
+- Eventual consistency non-stop:
+    - `upds(a)` $\subseteq$ `upds(b)` $\implies$ `a` $\le$ `b` (weaker version of `upds(a) = upds(b)` $\implies$ `a = b`).
+- Design of CRDTs:
+    - Partially ordered logs (pologs) of operations implement any CRDT;
+    - Any query at replica `i` can be expressed from local polog `O`<sub>`i`</sub>; example: counter at `i` is `|{inc` $\in$ `O`<sub>`i`</sub>`}| - |{dec` $\in$ `O`<sub>`i`</sub>`}|`.
+- Implementing counters (e.g. CRDT PNCounters):
+    - Track number of incs and decs done at each replica (`{A(inc,dec), B(inc,dec), C(inc,dec)}`);
+    - At any point, counter value is `sum(inc) - sum(dec)`;
+    - Joining does point-wise maximums among entries;
+- Registers:
+    - Registers are an ordered set of write operations (can be sequential under distribution);
+    - Register value is the last written value;
+    - LWW using timestamps is a simple approach to evolve state without strong coordination (needs synchronised wall-clocks);
+    - Concurrency semantics show all concurrent values (e.g., values `k` and `y` are written concurrently -> `{k, y}` is the value when merging - multi-value registers; application-level merge needed to get final value);
+    - Concurrency can be precisely tracked with version vectors;
+    - Problem: concurrent `add(x)`, `rmv(x)`;
+    - Add-wins: `x` is in the set if $\nexists$ `rmv(x)` $\prec$ `add(x)` (e.g. Redis CRDTs); using tombstone lists avoids concurrency problems.
+
+-------------------
+
+## Quorums
+### Quorum Consensus Protocols
+- Clients communicate directly to the servers/replicas;
+- Each operation (e.g. read/write) requires a quorum (set of replicas);
+- If the result of one operation depends on another one, their quorums must overlap (have common replicas);
+- A simple way to define replicas is to consider all replicas as peers (quorums are determined by their size - similar to weighted voting with all weights = 1);
+
+### Implementation
+- Each object has a version number;
+- **Read:** polls a read quorum, to find current version, then reads the value from an up-to-date replica;
+- Output of a read operation depends on previous write operations, therefore, read and write quorums must overlap: `N`<sub>`R`</sub>`+N`<sub>`W`</sub> $\ge$ `N`;
+- **Write:** polls a write quorum, to find current version, then writes the new value and new version to a write quorum;
+- Since writes depend on previous writes (via version), and therefore write quorums must overlap: `N`<sub>`W`</sub>`+N`<sub>`W`</sub> $\ge$ `N`;
+
+### Faults and consistency
+- Partitions can cause different values for the same version and, when the partition is healed, clients reading can get a different value from their own write - does not ensure read-your-writes; also happens with concurrent writes;
+- Consistency can be ensured with transactions, using two-phase commit or a variant (the client won't get the vote from the inaccessible replica and value won't be updated); at least a write quorum must accept the write; also solves the problem with concurrent writes using locks;
+- Can lead to deadlocks, if transactions use locks, or blocking, if they use 2PC;
+- Choosing `N`<sub>`R`</sub> and `N`<sub>`W`</sub> appropriately, we can trade off performance and availability of the different operations;
+- Assigning each replica its own number of votes provides extra flexibility;
+- Quorum consensus tolerates both replica and communication failures
+
+### Dynamo
+- Replicated key-value storage system with associative memory abstraction: `put(key,value)`, `get(key)`;
+- Uses version vector instead of version number;
+- Enhances high-availability, sacrificing strong consistency under certain failure scenarios;
+- Each key is associated with a set of servers (preference list), the first `N` being the main replicas and the remaining being backup, used only in case of failures;
+- Each operation has a coordinator from the `N` main replicas;
+- `put()` requires a quorum of `W` replicas and `get()` requires a quorum of `R` replicas, such that `R + W `$\gt$` N`;
+- `put(key, value, context)`: the coordinator determines the new version from `context`, a set of version vectors, and sends the `(key, value)` pair and the version vector to the `N` first servers in `key`'s preference list (deemed successful if at least `W-1` replicas respond);
+- `get(key)`: the coordinator requests all versions of the `(key, value)`, from the remaining first `N` servers in the preference list and returns **all** the `(key, value)` pairs whose version vector is maximal after receiving `R-1` responses (if multiple, the application executing `get()` must reconcile versions and write-back the reconciled pair using `put()`);
+- In case of failure, the coordinator will try to get a sloppy quorum by enlisting the backup replicas in the preference list.
+
+-------------------
+
+## Quorum Consensus and Replicated Abstract Data Types
+### Initial and final quorums
+- When executing an operation, a client:
+    - Reads from an **initial quorum**;
+    - Writes to a **final quorum**;
+- Either can be empty;
+- A quorum is any set of replicas that includes both an initial and a final quorum;
+- Assuming all replicas are equal, a quorum may be represented by a pair `(m,n)`, `m` being the size of its initial quorum and `n` of its final one;
+- Intersection constraints are defined between the final quorum of one operation and the initial quorum of another;
+
+### Example: Gifford's read/write quorums
+- Read/write operations are subject to two constraints:
+    1. Each final quorum for write must intersect each initial quorum for read;
+    2. Each final quorum for write must intersect each initial quorum for write;
+- Quorum intersection graph:
+    <br>┌───┐<br>│   v<br>│  write ────────> read<br>└───┘
+- Minimal quorum choices (5 replicas):
+    - Read: `| (1,0) | (2,0) | (3,0) |`
+    - Write: `| (1,5) | (2,4) | (3,3) |`
+- Gifford's based replicated queue:
+    - A queue has two basic operations, enqueue and dequeue;
+    - Enqueue: adds an item to the queue;
+    - Dequeue:
+        - Read an initial read quorum, to determine current version of the queue;
+        - Read the state from an updated replica;
+        - If the queue is not empty, remove the head, write the new queue state to a final write quorum and return the item removed;
+        - If the queue is empty, raise exception.
+    - Minimal quorum choices:
+        - Enqueue: `| (1,5) | (2,4) | (3,3) |`
+        - Dequeue: `| (1,5) | (2,4) | (3,3) |`
+        - Abnormal:`| (1,0) | (2,0) | (3,0) |`
+        - Only the last column makes sense in terms of availability;
+
+### Herlihy's replicated ADT's
+- Use timestamps instead of version numbers (reduces messages and quorum intersection constraints);
+- Replicas keep logs instead of versions;
+- Read: similar to version-based, except replica is up-to-date by timestamp instead of version;
+- Write: no need to read from initial quorum, timestamp generation guarantees total order for whole state changes;
+- Quorum intersection graph: write ────────> read
+- Minimal quorum choices:
+    - Read: `| (1,0) | (2,0) | (3,0) | (4,0) | (5,0) |`
+    - Write: `| (0,5) | (0,4) | (0,3) | (0,2) | (0,1) |`
+    - For reads more common than writes, left is better;
+- Replicated event logs vs state:
+    - Event: state change represented as a pair `[operation(args), outcome(results)]`, e.g. `[read(), ok(x)]` and `[write(x), ok()]`.
+    - Event log: sequence of log entries;
+    - Log entry: timestamped event (e.g. `t`<sub>`0`</sub> `: [enq(x); ok()]`);
+    - Rather than replicate state, replicate event logs;
+
+### Example: Herlihy's replicated queue
+- Enqueue/dequeue operations are subject to two constraints:
+    1. Every initial dequeue quorum must intersect every final enqueue quorum;
+    2. Every initial dequeue quorum must intersect every final dequeue quorum;
+- Dequeue:
+    - Read logs from an initial dequeue quorum and creates a view (log obtained by merging entries of a set of logs, in timestamp order, and discarding duplicates);
+    - Reconstruct the queue state and find item to return;
+    - If the queue is not empty, record `deq` event, appending new entry to view, and send modified view to a final `deq` quorum (replicas merge this view with their local logs);
+    - Return dequeued item or exception;
+- Quorum intersection graph:
+    <br>           ┌───┐<br>enqueue ────> dequeue  │<br>  │         │ ^   │<br>  │         │ └───┘<br>  │         v<br>  └───────> abnormal
+- Minimal quorum choices (5 replicas):
+    - Enqueue: `| (0,1) | (0,2) | (0,3) |`
+    - Dequeue: `| (5,1) | (4,2) | (3,3) |`
+    - Abnormal:`| (5,0) | (4,0) | (3,0) |`
+    - Herlihy's approach allows `enq` to be more available at the expense of `deq`'s availability;
+- Problem: logs and messages grow indefinitely;
+- Solution: garbage collect logs:
+    - If an item has been dequeued, all items with earlier timestamps have been dequeued;
+    - Not enough to remove entries, otherwise some may be readded upon merging;
+    - Is enough to keep the horizon timestamp (timestamp of the most recently dequeued item) and a log with only `enq` entries, whose timestamps are later than the horizon timestamp;
+
+### Issues with replicated ADT's
+- Timestamps:
+    - Are supposed to be generated by clients and consistent with linearisability;
+    - Herlihy's relies on transactions and hierarchical timestamps, so the problem is reduced to transaction ordering and, if using locks, serial order is usually determined at commit time;
+    - If not using transactions, how do clients generate a timestamp if the initial quorum is empty?;
+- Logs:
+    - Must be garbage collected to bound the size of messages;
+    - May be effective for Herlihy's queues but not for other replicated ADT's;
