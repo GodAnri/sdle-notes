@@ -473,3 +473,135 @@ In geo-replication, latencies vary widely ($\lambda$` < 50ms` - local region DC;
 - Logs:
     - Must be garbage collected to bound the size of messages;
     - May be effective for Herlihy's queues but not for other replicated ADT's;
+
+-------------------
+
+## Byzantine Quorums
+### Byzantine process
+- Byzantine Failures: when a process arbitrarily deviates from its specifications;
+- Byzantine Generals Problem (BGP):
+    - Agreement: All non-faulty processes deliver the same message;
+    - Validity: If the broadcaster is non-faulty, all non-faulty deliver its message;
+    - There is no solution to the BGP in a system with 3 processes, if one of them may be byzantine, if messages are not signed (faulty processes must be less than a third of all processes).
+- With cryptographic signatures, the node receiving the different messages can identify whether the byzantine process is the broadcaster (in which case the receiver sends the message as signed by the broadcaster) or the receiver (which can't sign the modified message properly) - the protocol must prevent replay attacks.
+
+### Quorum consensus with byzantine replicas
+- Considering a quorum for read/write operations, in which some servers may exhibit byzantine failures (report random version numbers);
+- Each replica stores a replica of the variable and a timestamp, which is assigned by clients when the client writes the replica, from a set of timestamps that does not overlap the sets of all other clients (e.g. adding the client id to an integer);
+- Liveness doesn't make sense due to asynchrony;
+- Safety: any read that is not concurrent with writes returns the last value written in some serialisation of the preceding writes;
+- Begin and end of events determine a partial order (linearisability of read/write);
+- **Write** of value `v` by client c:
+    - c obtains a set A with timestamps from all servers of some quorum Q;
+    - c creates a timestamp higher than any of A's and any of its own previous ones;
+    - c sends the update `<v,t>` to servers until it has received an Ack from every server in quorum Q';
+    - Server updates its local `<v',t'>` if `t` $\gt$ `t'` and returns an Ack to the client in both cases;
+    - Begins when c initiates the operation, ends when all correct servers in some quorum have processed the update `<v,t>`.
+- **Read** of variable `x` by client c:
+    - c obtains a set A with value/timestamp pairs from all servers of some quorum Q;
+    - c applies a deterministic function `Result(A)` to obtain the result of the read operation;
+    - Begins when c initiates the operation, ends when `Result(A)` function returns.
+- Obtaining the reply from every server in the quorum is the only way to ensure that it gets the reply from all non-faulty servers;
+- Quorums are defined such that there is always one quorum of non-faulty servers (otherwise, a byzantine server might not respond and the client couldn't progress);
+
+### Byzantine masking quorums
+- `Q`<sub>`1`</sub> is the latest write quorum;
+- `B` is the set of byzantine servers;
+- `Q`<sub>`2`</sub> is the read quorum;
+- `(Q`<sub>`1`</sub>$\cap$`Q`<sub>`2`</sub>`)\B` are the up-to-date servers;
+- `Q`<sub>`2`</sub>`\(Q`<sub>`1`</sub>$\cup$`B)` are the servers with stale values;
+- `Q`<sub>`2`</sub>$\cap$`B` are the servers with arbitrary values;
+- Properties:
+    - M-consistency: it is possible to read the most recent value (not all servers in `Q`<sub>`1`</sub>$\cap$`Q`<sub>`2`</sub> are byzantine);
+    - M-availability: there is always a quorum that does not include byzantine nodes.
+
+### Size-based byzantine masking quorums
+- M-consistency ensures that the client always obtains an up-to-date value, but it must identify which is it: being `f` be the bound on faulty servers, we need `f + 1` up-to-date non-faulty servers to outnumber the faulty servers, thus every pair of quorums must intersect in at least `2f + 1` servers, therefore, `2q - n` $\ge$ `2f + 1`;
+- M-availability ensures that `n - f` $\ge$ `q`;
+- Combining both expressions, we have that `2(n - f) - n` $\ge$ `2f + 1`, thus `n` $\ge$ `4f + 1` and `q = 3f + 1`.
+
+### Size-based non-byzantine read/write quorums
+1. `w` $\ge$ `f + 1` - ensures that survives failures;
+2. `w + r` $\gt$ `n` - ensures that reads see most recent write;
+3. `n - f` $\ge$ `r` - ensures read availability;
+4. `n - f` $\ge$ `w` - ensures write availability;
+- `2n - 2f` $\ge$ `r + w` from 3 and 4;
+- `2n - 2f` $\gt$ `n` $\Leftrightarrow$ `n` $\gt$ `2f` from 2;
+- Let `n = 2f + 1`, then `w = f + 1` and `r = f + 1`;
+- Increasing `n` worsens performance (requires larger quorums) but increases fault tolerance (as `f` can increase).
+- Read: c queries servers until it gets a reply from a set Q of `3f + 1` servers; let A = `{(v`<sub>`u`</sub>`,t`<sub>`u`</sub>`): u` $\in$ `Q}` be the set of value/timestamp pairs received from at least `f + 1` servers, the result of read is the value returned by `Result(A)` (the value of the pair with the highest timestamp in A);
+- It is possible for a read to fail because of concurrent writes;
+
+### Dissemination quorum systems
+- Application in repositories of self-verifying information (e.g. repositories of public keys and blockchains);
+- Instead of `n` $\ge$ `4f + 1`, needs `n` $\ge$ `3f + 1`;
+- A read that is concurrent with one or more writes returns either the value written by the last preceding write or any of the values being written in a concurrent write.
+
+-------------------
+
+## Practical Byzantine Fault-Tolerance
+### Impossibility of consensus with a faulty process (FLP's impossibility result)
+- Safety: the decided value depends on the input values and no two correct processes decide differently;
+- Liveness: every execution decides a value;
+- In an asynchronous system in which at least one process may crash, there is no deterministic consensus that is both live and safe, even if the network is reliable (no message loss);
+- In an asynchronous system we cannot distinguish a slow process from a crashed one;
+
+### Model
+- Network may delay, duplicate, deliver out of order or fail to deliver messages;
+- Nodes are byzantine but independent;
+- Processes use cryptographic techniques to prevent spoofing and replays, as well as to detect corrupted messages;
+- Digestion function: `D(m)`;
+- Message `m` signed by `i`;
+- SMR can be implemented:
+    - Each replica: maintains service state and executes deterministic operations;
+    - Essentially behave like a non-replicated system (satisfies linearisability);
+    - Tolerates `f` faulty replicas with `n = 3f + 1`;
+
+### Protocol Overview (SMR)
+- View is a numbered system configuration (replicas move through a succession of views, each of them having a leader `p = v mod n`);
+- View changes occur upon suspicion of the current leader;
+- Leader receives message from client, atomically broadcasts the request to all replicas (ensure total order), replicas execute the request and send reply;
+- Client waits for replies with the same result (`t` and `r`) from `f + 1` replicas;
+- If the client does not receive replies on time, it broadcasts the request to all replicas, which resend the reply or relay it to the leader; if the leader doesn't multicast the request, it will eventually be suspected of being faulty.
+
+### Atomic Broadcast
+- PBFT uses quorums to implement atomic multicast;
+- Replicas collect quorum certificates (set with one message for each element in quorum); weak certificates are sets with at least `f + 1` messages from different replicas (e.g. reply certificate, set that a client needs to receive to return the result);
+- Three-phase commit protocol:
+    - Pre-prepare: leader assigns an increasing sequence number to the message `m` and multicasts the `<<pre-prepare, v, n, d>, m>` message to the replicas; upon receiving that message, a replica accepts it if it is in view `v`, the signatures in `m` and `pre-prepare` are valid, `d` is the digest of `m`, the sequence number `n` is between a low and a high water marks, `h` and `H`, and it hasn't accepted a `pre-prepare` message in view `v` with sequence number `n` with a different digest `d`;
+    - Prepare: after accepting a `pre-prepare` message, every replica `i` (including the leader) send a `<prepare, v, n, d, i>` to all other replicas, which is accepted by any other replica if `v` is the replica's current view, its signature is correct and the sequence number is between `h` and `H`;
+        - Prepared certificate: each replica collects `2f prepare` messages from different replicas; after collecting the prepared certificate, a replica has prepared the request;
+        - Total order within a view: it is guaranteed, because `2f + 1` replicas need to accept pre-prepare to obtain a prepare-certificate, and the quorums of two prepare-certificates have at least `f + 1` common replicas, thus at least one non-faulty replica would have accepted two pre-prepare messages in the same view and with the same sequence number but different digests (impossible);
+        - Ensuring order across view changes: replicas may collect prepared certificates in different views with the same sequence number (if a replica receives a prepared certificate, the leader is faulty and there is a view change, but the new leader did not receive that prepared certificate);
+    - Commit: after collecting a prepared certificate, replica `i` multicasts `<commit, v, n, d, i>` to all replicas, which is accepted if the view, the signature and the sequence number are correct; a replica may accept a `commit` message before moving to the commit phase;
+        - Commit certificate: each replica collects `2f commit` messages from different replicas; after collecting the prepared and commited certificates, a replica has committed the request;
+        - Ensures that if a replica committed a request, that request is prepared by at least `f + 1` non-faulty replicas; with the view change protocol, this guarantees that non-faulty replicas agree on the sequence number of a committed request, even if they may commit in different views, and that any request committed by a non-faulty replica will be committed by all non-faulty replicas.
+- Request and delivery execution: each replica executes the operation if it has committed the request and it has executed all requests with a lower sequence number; replicas send a reply to the client after executing the requested operation and discard requests whose timestamp is lower than the last reply they sent to the client (guarantees exactly-once);
+- Garbage collection and checkpoints:
+    - Problem: a replica cannot discard the messages with a sequence number as soon as it executes that request, because some replicas may have missed some messages; for replica repair/replacement or partition fix, we need state synchronisation (if the log is pruned, state transfer protocol is required);
+    - Checkpoint: every `K` requests, a replica checkpoints its state and generates a proof of correctness of that checkpoint (that makes the checkpoint stable), and can discard from the log earlier checkpoints and messages;
+    - A replica maintains the last stable checkpoint, one or more unstable ones and the current state;
+    - Stable certificate: set of `f + 1 checkpoint` signed messages for sequence number `n` with the same digest (proves that at least one non-faulty replica has generated a checkpoint with sequence number `n` and digest `d`);
+    - Water marks are set to:
+        - `h`: `n` of the last stable checkpoint;
+        - `H`: `h + L`, where `L` is a small multiple (e.g. 2) of the checkpoint period `K`.
+
+### View Change Protocol
+- Purpose: ensure liveness upon failure of the leader, while ensuring safety;
+- Leader failure is suspected with a timer, which prevents replicas from waiting indefinitely;
+- Upon timeout, replicas start changing to view `v + 1`, stop accepting messages other than `checkpoint`, `view-change` and `new-view`, and multicast a `<viewchange, v + 1, n, C, P, i>`, where:
+    - `n`: sequence number of the last stable checkpoint known to `i`;
+    - `C`: checkpoint's stable certificate;
+    - `P`: set with prepared certificate for each request prepared with `n' > n`.
+- Guarantees that a request with sequence number `n` that doesn't have the prepared certificate is retransmitted in the new view with the same sequence number.
+- To avoid changing a view too early, view change timeouts are increasingly high;
+- If a replica receives a set of `f + 1` valid `view-change` for views greater than its current one, it sends a `view-change` for the smallest view in the set, even if its timer hasn't expired.
+
+### Byzantine quorums vs PBFT
+- Compared with SMR, BQ appear to require fewer messages, but also has stronger assumptions, especially regarding the client;
+- Furthermore, these quorum protocols support only read/write operations;
+- In order to build more complex operations, the number of messages, as well as race conditions, would increase.
+
+-------------------
+
+## 
