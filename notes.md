@@ -604,4 +604,77 @@ In geo-replication, latencies vary widely ($\lambda$` < 50ms` - local region DC;
 
 -------------------
 
-## 
+## Blockchain
+### Bitcoin
+- Direct online payments without a trusted third party;
+- Maintains a record of all transactions (money transfers) ever performed in a distributed fashion (blockchain);
+- P2P network supporting broadcast;
+- Set of accounts, each of which has public and private keys (owner-generated, no need for a PKI).
+- Blockchain:
+    - Blocks are a set of events (e.g. transactions) with maximum size of 1MB, containing a header with metadata;
+    - The first block in the chain is the genesis block;
+    - Blocks are appended to the blockchain head (most recently added block).
+- Network:
+    - Blockchain is replicated in each node of the network;
+    - Peers have random connections to others;
+    - Each node attempts to connect to 8 others, but the node degree can be much larger if it accepts incoming connections.
+- Consensus:
+    - Consensus is needed to agree on the blocks and their order;
+    - Conventional byzantine algorithms (either byzantine quorums or PBFT);
+    - It is difficult to know how many nodes there are;
+    - It is fairly easy to create multiple identities (faulty - known as the Sybil attack).
+
+### Bitcoin proof-of-work
+- Cryptographic puzzle that takes a random large time (find a nonce to include in the block header such that the header's SHA-256 is smaller than a target);
+    - Target can be tuned to adjust the difficulty (number of hashes needed is `2`<sup>`256`</sup>`/target`);
+    - Adjusted every 2016 blocks (expected = 14 days) so that the expected time required is 10 minutes.
+- Upon solving the PoW, a node broadcasts the new block, which is validated by other nodes (verify PoW and check transactions), and then added to the blockchain head and forwarded;
+- The node stops working on the PoW for the block it was and starts working on the next block, which will follow the one just added;
+- When a node receives a block, its chain may be missing some of its ancestors, which it must fetch and validate (the protocol synchronises efficiently).
+
+### Block broadcasting with anti-entropy
+- Upon validation, a node sends an `inv`(entory) message with a set of hashes of blocks it has;
+- If the receiver doesn't have some of those blocks, it sends a `getdata` message with a list of the hashes of blocks it wants;
+- The node sends each block in the list in its own `block` message;
+- Each newly created block is inserted into the network by a miner using an unsolicited `block` message to one or more peers.
+- Block propagation delay:
+    - Block validation may add a significant delay (due to the need for disk access) and it is repeated at every hop;
+    - Block propagation delay has a long tail distribution;
+    - Improvements:
+        - Reduction of diameter;
+        - Faster validation (faster HW).
+
+### Bitcoin forks
+- Occur when two or more nodes add a different block at the head at the same time;
+- Resolution is based on the expected amount of work (switch to a larger blockchain);
+- There is no guarantee that a block will persist, but the likelihood of it being removed decreases with each added block (confirmation);
+- At some point, Nakamoto added "code-based checkpointing" (the hash of a block that cannot be replaced - or any of those that precede it - is hardcoded in the software);
+- Eventual consistency with high probability, assuming that the hash-power of an adversary is limited;
+- Accidental forks depend mainly on the expected time to generate the PoW and the block propagation delay;
+- Selfish mining strategies: after finding a PoW, a node can withhold its block until a competing block is sent, in order to replace it.
+
+### Bitcoin scalability and energy consumption
+- Broadcasting;
+- Computationally intensive PoW;
+- Small blocks (1MB maximum);
+- Storage of the whole blockchain kept by all nodes (restrictions above limit the growth rate).
+- Transaction bound:
+    - Theoretical limit of 8 transactions/second;
+    - Bitcoin parameter tuning can't make up for the difference in over 3 orders of magnitude to other systems:
+        - Block size: increasing by an order of magnitude may cause growth rate of 500 GB/year;
+        - PoW difficulty: increase the block rate to 1/minute makes forking much more frequent.
+- Extremely low energy-efficiency: to be relevant and secure, it requires a huge hash-power;
+
+### Proof-of-stake
+- Ethereum wants to replace PoW with PoS;
+- Run a "lottery" to decide which user adds the next block;
+- Number of "tickets" = product of the amount of coins by the time that amount is held (integral of the amount of coins over time).
+
+### Permissioned blockchains
+- Implementation of smart contracts (code that may be executed upon some event added to the blockchain);
+    - Main problem is ensuring consensus on the contents of each block and their order.
+- PBFT can be used to maintain a replicated log (i.e. a blockchain) but its complexity is `O(n`<sup>`2`</sup>`)`, while bitcoin's PoW scales (kind of) to thousands of nodes;
+- Taxonomy regarding authorisation to maintain, grow and access a blockchain:
+    - Permissionless/public: anyone can read and grow a blockchain (e.g. Bitcoin);
+    - Consortium: maintained by members of a consortium (each member may run a few nodes, responsible for persistence and growth of the blockchain; may use different read policies, from open-access to consortium-only);
+    - Permissioned/private: single organisation controls which blocks are added.
